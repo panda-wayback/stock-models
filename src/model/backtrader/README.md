@@ -7,8 +7,8 @@
 ### 1. 基本使用
 
 ```python
-from model.core.engine import BacktestEngine
-from model.strategy.sma_cross_strategy import SMACrossStrategy
+from model.backtrader.core.engine import BacktestEngine
+from model.backtrader.strategy.sma_cross_strategy import SMACrossStrategy
 
 # 创建回测引擎
 engine = BacktestEngine(
@@ -38,59 +38,14 @@ result = engine.run()
 print(f"总收益率: {result['total_return']:.2f}%")
 ```
 
-### 2. 自定义策略
+### 2. 简化导入（推荐）
 
 ```python
-from model.strategy.base import BaseStrategy
-import backtrader as bt
+# 使用框架提供的统一接口
+from model.backtrader import BacktestEngine, BaseStrategy
+from model.backtrader.strategy.sma_cross_strategy import SMACrossStrategy
 
-class MyStrategy(BaseStrategy):
-    params = (
-        ('period', 20),
-        ('printlog', False),
-    )
-    
-    def __init__(self):
-        super().__init__()
-        self.sma = bt.indicators.SMA(
-            self.data.close,
-            period=self.params.period
-        )
-    
-    def next(self):
-        if self.order:
-            return
-        
-        # 买入逻辑
-        if self.data.close[0] > self.sma[0]:
-            if not self.position:
-                self.buy()
-        
-        # 卖出逻辑
-        elif self.data.close[0] < self.sma[0]:
-            if self.position:
-                self.sell()
-```
-
-### 3. 使用触发机制
-
-```python
-from model.trigger.signal_trigger import CrossoverSignal
-
-class MyStrategy(BaseStrategy):
-    def __init__(self):
-        super().__init__()
-        self.fast_ma = bt.indicators.SMA(self.data.close, period=5)
-        self.slow_ma = bt.indicators.SMA(self.data.close, period=20)
-        
-        # 交叉信号
-        self.crossover = CrossoverSignal(self.fast_ma, self.slow_ma)
-    
-    def next(self):
-        if self.crossover.check_golden_cross():
-            self.buy()
-        elif self.crossover.check_death_cross():
-            self.sell()
+# 使用方式同上
 ```
 
 ## 核心功能
@@ -115,7 +70,7 @@ class MyStrategy(BaseStrategy):
 ## 目录结构
 
 ```
-src/model/
+backtrader/
 ├── core/              # 核心处理模块
 │   ├── broker.py      # Broker 配置
 │   ├── comm_info.py  # 手续费和印花税
@@ -132,14 +87,15 @@ src/model/
 
 ## 详细文档
 
-- [最佳实践文档](../docs/量化/Backtrader框架最佳实践.md)
+- [最佳实践文档](../../docs/量化/Backtrader框架最佳实践.md)
+- [架构设计文档](../../docs/量化/Backtrader框架架构.md)
 
 ## 示例
 
 运行示例：
 
 ```bash
-python -m model.example
+python -m model.backtrader.example
 ```
 
 ## 注意事项

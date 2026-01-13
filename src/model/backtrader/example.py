@@ -1,0 +1,101 @@
+"""
+Backtrader 框架使用示例
+"""
+from model.backtrader.core.engine import BacktestEngine
+from model.backtrader.strategy.sma_cross_strategy import SMACrossStrategy
+from model.backtrader.strategy.rsi_strategy import RSIStrategy
+
+
+def example_sma_cross():
+    """双均线交叉策略示例"""
+    print("=" * 60)
+    print("双均线交叉策略回测示例")
+    print("=" * 60)
+    
+    # 创建回测引擎
+    engine = BacktestEngine(
+        initial_cash=100000.0,
+        commission=0.0002,      # 手续费 0.02% 万分之二
+        stamp_tax=0.001,        # 印花税 0.1% 千分之一
+        min_commission=1.0,
+        printlog=True
+    )
+    
+    # 添加数据
+    engine.add_data(
+        symbol="000651",        # 格力电器
+        start_date="2024-01-01",
+        end_date="2025-12-31",
+        frequency="d"           # 日线
+    )
+    
+    # 添加策略
+    engine.add_strategy(
+        SMACrossStrategy,
+        fast_period=5,
+        slow_period=20,
+        printlog=True
+    )
+    
+    # 运行回测
+    result = engine.run()
+    
+    # 显示结果
+    print("\n回测完成！")
+    print(f"初始资金: {result['initial_cash']:,.2f}")
+    print(f"最终资金: {result['final_value']:,.2f}")
+    print(f"总收益率: {result['total_return']:.2f}%")
+    
+    return result
+
+
+def example_rsi():
+    """RSI 策略示例"""
+    print("=" * 60)
+    print("RSI 策略回测示例")
+    print("=" * 60)
+    
+    # 创建回测引擎
+    engine = BacktestEngine(
+        initial_cash=100000.0,
+        commission=0.0003,
+        stamp_tax=0.001,
+        min_commission=5.0,
+        printlog=True
+    )
+    
+    # 添加数据
+    engine.add_data(
+        symbol="000651",
+        start_date="2024-01-01",
+        end_date="2024-12-31",
+        frequency="d"
+    )
+    
+    # 添加策略
+    engine.add_strategy(
+        RSIStrategy,
+        rsi_period=14,
+        rsi_low=30,
+        rsi_high=70,
+        printlog=True
+    )
+    
+    # 运行回测
+    result = engine.run()
+    
+    # 显示结果
+    print("\n回测完成！")
+    print(f"初始资金: {result['initial_cash']:,.2f}")
+    print(f"最终资金: {result['final_value']:,.2f}")
+    print(f"总收益率: {result['total_return']:.2f}%")
+    
+    return result
+
+
+if __name__ == "__main__":
+    # 运行示例
+    example_sma_cross()
+    
+    # 取消注释以运行 RSI 策略示例
+    # example_rsi()

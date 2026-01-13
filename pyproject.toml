@@ -8,16 +8,6 @@ version = "0.1.0"
 description = "基于 VectorBT 的金融数据处理与回测系统"
 readme = "readme.md"
 requires-python = ">=3.8"
-dependencies = [
-    "adata>=0.1.0",
-    "baostock>=0.8.8",
-    "pandas>=1.5.0",
-    "pyarrow>=10.0.0",
-    "numpy>=1.20.0",
-    "panda-python-packages",
-    "backtrader>=1.9.78.123",
-    "matplotlib>=3.5.0",
-]
 
 [tool.setuptools.packages.find]
 where = ["src"]
