@@ -70,22 +70,59 @@ class BaseStrategy(bt.Strategy):
         
         if order.status in [order.Completed]:
             if order.isbuy():
+                # 计算实际手续费（order.executed.comm 是总费用，但买入时只有手续费）
+                commission = order.executed.comm
                 self.log(
                     f'买入执行, 价格: {order.executed.price:.2f}, '
                     f'数量: {order.executed.size}, '
                     f'成本: {order.executed.value:.2f}, '
-                    f'手续费: {order.executed.comm:.2f}'
+                    f'手续费: {commission:.2f}'
                 )
                 # 记录买入日期（用于 T+1 检查）
                 self._buy_dates.append(self.data.datetime.date(0))
                 self.buy_order = None
             elif order.issell():
-                self.log(
-                    f'卖出执行, 价格: {order.executed.price:.2f}, '
-                    f'数量: {order.executed.size}, '
-                    f'成本: {order.executed.value:.2f}, '
-                    f'手续费: {order.executed.comm:.2f}'
-                )
+                # 计算手续费和印花税
+                # order.executed.comm 是总费用（手续费+印花税）
+                total_cost = order.executed.comm
+                value = abs(order.executed.size) * order.executed.price
+                
+                # 反推手续费和印花税
+                # 手续费 = value * commission_rate，但不少于 min_commission
+                # 印花税 = value * stamp_tax_rate
+                # 总费用 = 手续费 + 印花税
+                
+                # 从 CommInfo 获取参数（需要访问 broker 的 comminfo）
+                try:
+                    comminfo = self.broker.getcommissioninfo(self.data)
+                    commission_rate = comminfo.p.commission
+                    stamp_tax_rate = comminfo.p.stamp_tax
+                    min_commission = comminfo.p.min_commission
+                    
+                    # 计算手续费
+                    commission = value * commission_rate
+                    if commission < min_commission:
+                        commission = min_commission
+                    
+                    # 计算印花税
+                    stamp_tax = value * stamp_tax_rate
+                    
+                    self.log(
+                        f'卖出执行, 价格: {order.executed.price:.2f}, '
+                        f'数量: {order.executed.size}, '
+                        f'成本: {order.executed.value:.2f}, '
+                        f'手续费: {commission:.2f}, '
+                        f'印花税: {stamp_tax:.2f}, '
+                        f'总费用: {total_cost:.2f}'
+                    )
+                except:
+                    # 如果无法获取详细信息，只显示总费用
+                    self.log(
+                        f'卖出执行, 价格: {order.executed.price:.2f}, '
+                        f'数量: {order.executed.size}, '
+                        f'成本: {order.executed.value:.2f}, '
+                        f'总费用: {total_cost:.2f}'
+                    )
                 self.sell_order = None
         
         elif order.status in [order.Canceled, order.Margin, order.Rejected]:
@@ -380,10 +417,20 @@ class BaseStrategy(bt.Strategy):
             **kwargs):
         """
         买入（重写以支持 T+1 检查）
+        
+        参数:
+        - size: 买入数量，如果为 None 则使用全部现金买入
+        - 其他参数同 Backtrader 的 buy() 方法
         """
         # 如果有未完成的订单，不重复下单
         if self.order:
             return None
+        
+        # 如果未指定数量，使用全部现金买入
+        if size is None:
+            size = self.calculate_position_size(cash_ratio=1.0)
+            if size <= 0:
+                return None
         
         # 执行买入
         self.order = super().buy(
@@ -399,6 +446,10 @@ class BaseStrategy(bt.Strategy):
              **kwargs):
         """
         卖出（重写以支持 T+1 检查）
+        
+        参数:
+        - size: 卖出数量，如果为 None 则卖出全部持仓
+        - 其他参数同 Backtrader 的 sell() 方法
         """
         # 如果有未完成的订单，不重复下单
         if self.order:
@@ -408,6 +459,13 @@ class BaseStrategy(bt.Strategy):
         if not self.can_sell_today():
             self.log('今天有买入，不能卖出（T+1限制）', doprint=True)
             return None
+        
+        # 如果未指定数量，卖出全部持仓
+        if size is None:
+            if self.position and self.position.size > 0:
+                size = abs(self.position.size)
+            else:
+                return None
         
         # 执行卖出
         self.order = super().sell(
@@ -420,6 +478,102 @@ class BaseStrategy(bt.Strategy):
     def close(self, **kwargs):
         """平仓"""
         return self.sell(size=self.position.size, **kwargs)
+    
+    def calculate_position_size(self, 
+                                cash_ratio: float = 1.0,
+                                position_ratio: Optional[float] = None,
+                                fixed_size: Optional[int] = None,
+                                min_size: int = 100) -> int:
+        """
+        计算买入/卖出数量
+        
+        参数:
+        - cash_ratio: 使用现金的比例（0.0-1.0），如 0.5 表示使用50%的现金
+        - position_ratio: 使用持仓的比例（0.0-1.0），如 0.5 表示卖出50%的持仓
+        - fixed_size: 固定数量（股数），如果指定则优先使用
+        - min_size: 最小交易数量（默认100股，即1手）
+        
+        返回:
+        计算后的数量（已按最小交易单位取整）
+        
+        示例:
+        # 使用50%现金买入
+        size = self.calculate_position_size(cash_ratio=0.5)
+        self.buy(size=size)
+        
+        # 卖出50%持仓
+        size = self.calculate_position_size(position_ratio=0.5)
+        self.sell(size=size)
+        
+        # 固定买入1000股
+        size = self.calculate_position_size(fixed_size=1000)
+        self.buy(size=size)
+        """
+        if fixed_size is not None:
+            # 固定数量
+            size = fixed_size
+        elif position_ratio is not None:
+            # 按持仓比例卖出
+            if not self.position or self.position.size <= 0:
+                return 0
+            size = int(abs(self.position.size) * position_ratio)
+        else:
+            # 按现金比例买入
+            cash = self.broker.getcash()
+            price = self.get_current_price()
+            if price <= 0:
+                return 0
+            
+            # 计算可用资金
+            available_cash = cash * cash_ratio
+            
+            # 计算可买数量
+            size = int(available_cash / price)
+        
+        # 按最小交易单位取整（A股是100股为1手）
+        size = (size // min_size) * min_size
+        
+        return max(0, size)  # 确保非负
+    
+    def buy_with_ratio(self, cash_ratio: float = 1.0, **kwargs):
+        """
+        按现金比例买入
+        
+        参数:
+        - cash_ratio: 使用现金的比例（0.0-1.0）
+        - **kwargs: 传递给 buy() 的其他参数
+        
+        示例:
+        # 使用50%现金买入
+        self.buy_with_ratio(cash_ratio=0.5)
+        
+        # 使用全部现金买入
+        self.buy_with_ratio(cash_ratio=1.0)
+        """
+        size = self.calculate_position_size(cash_ratio=cash_ratio)
+        if size > 0:
+            return self.buy(size=size, **kwargs)
+        return None
+    
+    def sell_with_ratio(self, position_ratio: float = 1.0, **kwargs):
+        """
+        按持仓比例卖出
+        
+        参数:
+        - position_ratio: 卖出持仓的比例（0.0-1.0），1.0表示全部卖出
+        - **kwargs: 传递给 sell() 的其他参数
+        
+        示例:
+        # 卖出50%持仓
+        self.sell_with_ratio(position_ratio=0.5)
+        
+        # 全部卖出（等同于 close()）
+        self.sell_with_ratio(position_ratio=1.0)
+        """
+        size = self.calculate_position_size(position_ratio=position_ratio)
+        if size > 0:
+            return self.sell(size=size, **kwargs)
+        return None
     
     def next(self):
         """

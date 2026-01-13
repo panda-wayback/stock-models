@@ -20,6 +20,7 @@ class ChinaStockCommInfo(bt.CommInfoBase):
         ('min_commission', 5.0),      # 最小手续费 5元
         ('stocklike', True),          # 股票模式
         ('commtype', bt.CommInfoBase.COMM_PERC),  # 按百分比
+        ('percabs', True),            # commission 是绝对小数（不是百分比）
     )
     
     def _getcommission(self, size, price, pseudoexec):
@@ -39,7 +40,7 @@ class ChinaStockCommInfo(bt.CommInfoBase):
         # 计算手续费
         commission = value * self.p.commission
         
-        # 应用最小手续费
+        # 应用最小手续费（手续费不能小于最小值）
         if commission < self.p.min_commission:
             commission = self.p.min_commission
         
@@ -48,4 +49,12 @@ class ChinaStockCommInfo(bt.CommInfoBase):
         if size < 0:  # 卖出
             stamp_tax = value * self.p.stamp_tax
         
-        return commission + stamp_tax
+        # 返回总费用
+        total_cost = commission + stamp_tax
+        
+        # 调试信息（可选，生产环境可关闭）
+        # if not pseudoexec:
+        #     print(f"费用计算: size={size}, price={price:.2f}, value={value:.2f}, "
+        #           f"commission={commission:.2f}, stamp_tax={stamp_tax:.2f}, total={total_cost:.2f}")
+        
+        return total_cost

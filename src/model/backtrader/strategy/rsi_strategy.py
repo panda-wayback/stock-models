@@ -19,6 +19,8 @@ class RSIStrategy(BaseStrategy):
         ('rsi_period', 14),    # RSI 周期
         ('rsi_low', 30),        # RSI 超卖阈值
         ('rsi_high', 70),       # RSI 超买阈值
+        ('buy_ratio', 1.0),     # 买入时使用的现金比例（0.0-1.0）
+        ('sell_ratio', 1.0),    # 卖出时使用的持仓比例（0.0-1.0）
         ('printlog', False),
     )
     
@@ -52,11 +54,23 @@ class RSIStrategy(BaseStrategy):
         # 检查超卖信号（买入）
         if self.oversold_signal.check():
             if not self.position:
-                self.log(f'RSI 超卖 ({self.rsi[0]:.2f})，买入')
-                self.buy()
+                # 方式1：使用便捷方法（推荐）
+                size = self.calculate_position_size(cash_ratio=self.params.buy_ratio)
+                if size > 0:
+                    self.log(f'RSI 超卖 ({self.rsi[0]:.2f})，买入 {size} 股（使用 {self.params.buy_ratio*100:.0f}% 现金）')
+                    self.buy(size=size)
+                
+                # 方式2：使用便捷方法（更简单）
+                # self.buy_with_ratio(cash_ratio=self.params.buy_ratio)
         
         # 检查超买信号（卖出）
         elif self.overbought_signal.check():
             if self.position:
-                self.log(f'RSI 超买 ({self.rsi[0]:.2f})，卖出')
-                self.sell()
+                # 方式1：使用便捷方法（推荐）
+                size = self.calculate_position_size(position_ratio=self.params.sell_ratio)
+                if size > 0:
+                    self.log(f'RSI 超买 ({self.rsi[0]:.2f})，卖出 {size} 股（卖出 {self.params.sell_ratio*100:.0f}% 持仓）')
+                    self.sell(size=size)
+                
+                # 方式2：使用便捷方法（更简单）
+                # self.sell_with_ratio(position_ratio=self.params.sell_ratio)

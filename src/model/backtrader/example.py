@@ -34,6 +34,8 @@ def example_sma_cross():
         SMACrossStrategy,
         fast_period=5,
         slow_period=20,
+        buy_ratio=1.0,      # 使用100%现金买入
+        sell_ratio=1.0,     # 卖出100%持仓
         printlog=True
     )
     
@@ -58,18 +60,18 @@ def example_rsi():
     # 创建回测引擎
     engine = BacktestEngine(
         initial_cash=100000.0,
-        commission=0.0003,
-        stamp_tax=0.001,
-        min_commission=5.0,
+        commission=0.0001, # 万分之1
+        stamp_tax=0.001, # 千分之一
+        min_commission=0.5,
         printlog=True
     )
     
     # 添加数据
     engine.add_data(
         symbol="000651",
-        start_date="2024-01-01",
-        end_date="2024-12-31",
-        frequency="d"
+        start_date="2025-01-01",
+        end_date="2025-12-31",
+        frequency="60"
     )
     
     # 添加策略
@@ -78,6 +80,8 @@ def example_rsi():
         rsi_period=14,
         rsi_low=30,
         rsi_high=70,
+        buy_ratio=1.0,      # 使用100%现金买入
+        sell_ratio=1.0,     # 卖出100%持仓
         printlog=True
     )
     
@@ -95,7 +99,7 @@ def example_rsi():
 
 if __name__ == "__main__":
     # 运行示例
-    example_sma_cross()
+    # example_sma_cross()
     
     # 取消注释以运行 RSI 策略示例
-    # example_rsi()
+    example_rsi()
