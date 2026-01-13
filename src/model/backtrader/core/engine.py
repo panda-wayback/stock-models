@@ -3,7 +3,7 @@ Backtrader 回测引擎
 提供统一的回测接口
 """
 import backtrader as bt
-from typing import Optional, Dict, Any, Type
+from typing import Optional, Dict, Any, Type, List, List
 from datetime import datetime
 import pandas as pd
 
@@ -58,6 +58,9 @@ class BacktestEngine:
         
         # 设置其他参数
         self.cerebro.broker.set_coc(True)  # 允许收盘价成交
+        
+        # 数据源配置
+        self._data_sources_added = False
     
     def add_data(
         self,
@@ -66,33 +69,142 @@ class BacktestEngine:
         end_date: Optional[str] = None,
         frequency: str = "d",
         df: Optional[pd.DataFrame] = None,
-        name: Optional[str] = None
+        name: Optional[str] = None,
+        is_main: bool = False
     ):
         """
-        添加数据源
+        添加数据源（支持多数据源）
         
         方式1：从数据源加载
         - symbol: 股票代码
         - start_date: 开始日期
         - end_date: 结束日期
-        - frequency: 数据频率
+        - frequency: 数据频率（"d"=日线, "60"=60分钟, "w"=周线等）
+        - is_main: 是否为主数据源（用于触发判断，默认False，第一个添加的自动成为主数据源）
         
         方式2：直接传入 DataFrame
         - df: 包含 OHLCV 的 DataFrame
-        - name: 数据名称（可选）
+        - name: 数据名称（可选，用于标识数据源）
+        - is_main: 是否为主数据源
+        
+        注意：
+        - 第一个添加的数据源自动成为主数据源（用于触发判断）
+        - 如果指定 is_main=True，该数据源会成为主数据源
+        - 主数据源用于 next() 的触发和交易执行
         """
         if df is not None:
             # 使用提供的 DataFrame
-            data = prepare_backtrader_data(df, name=name or symbol)
+            data = prepare_backtrader_data(df, name=name or symbol or f"data_{len(self.cerebro.datas)}")
         elif symbol and start_date and end_date:
             # 从数据源加载
             data = load_stock_data_to_backtrader(
                 symbol, start_date, end_date, frequency
             )
+            # 设置数据名称（包含频率信息）
+            if name is None:
+                name = f"{symbol}_{frequency}"
+            data._name = name
         else:
             raise ValueError("必须提供 DataFrame 或 (symbol, start_date, end_date)")
         
+        # 添加数据源到 Cerebro
+        # Backtrader 会自动处理主数据源和辅助数据源的同步
         self.cerebro.adddata(data)
+        
+        return self
+    
+    def add_stock_data(
+        self,
+        symbol: str,
+        start_date: str,
+        end_date: str,
+        frequencies: Optional[List[str]] = None,
+        main_frequency: Optional[str] = None
+    ):
+        """
+        自动添加股票的所有数据源（一键添加）
+        
+        参数:
+        - symbol: 股票代码（如 "000651"）
+        - start_date: 开始日期 "YYYY-MM-DD"
+        - end_date: 结束日期 "YYYY-MM-DD"
+        - frequencies: 需要的数据频率列表，默认 ["5", "15", "30", "60", "d"]
+                     支持: "5", "15", "30", "60" (分钟线), "d" (日线), "w" (周线), "m" (月线)
+        - main_frequency: 主数据源频率（用于触发判断），默认 "5"（5分钟线）
+                         如果 frequencies 中没有该频率，会自动添加
+        
+        返回:
+        self（支持链式调用）
+        
+        示例:
+        # 自动添加所有数据源（5分钟、15分钟、30分钟、60分钟、日线）
+        engine.add_stock_data("000651", "2025-01-01", "2025-12-31")
+        
+        # 只添加日线和周线
+        engine.add_stock_data(
+            "000651", 
+            "2025-01-01", 
+            "2025-12-31",
+            frequencies=["d", "w"]
+        )
+        
+        # 指定主数据源为日线
+        engine.add_stock_data(
+            "000651",
+            "2025-01-01",
+            "2025-12-31",
+            main_frequency="d"
+        )
+        """
+        if frequencies is None:
+            frequencies = ["5", "15", "30", "60", "d"]  # 默认：所有分钟线（5、15、30、60分钟）和日线
+        
+        if main_frequency is None:
+            main_frequency = "5"  # 默认主数据源：5分钟线（最细粒度，用于精确触发）
+        
+        # 确保主数据源在频率列表中，并且是第一个
+        if main_frequency not in frequencies:
+            frequencies.insert(0, main_frequency)
+        else:
+            # 如果主数据源在列表中，移到第一个位置
+            frequencies.remove(main_frequency)
+            frequencies.insert(0, main_frequency)
+        
+        # 频率名称映射
+        frequency_names = {
+            "5": "5分钟",
+            "15": "15分钟",
+            "30": "30分钟",
+            "60": "60分钟",
+            "d": "日线",
+            "w": "周线",
+            "m": "月线"
+        }
+        
+        # 添加每个数据源
+        for i, freq in enumerate(frequencies):
+            is_main = (i == 0)  # 第一个数据源是主数据源
+            name = f"{symbol}_{freq}"
+            
+            if self.printlog:
+                freq_name = frequency_names.get(freq, freq)
+                main_tag = "（主数据源）" if is_main else ""
+                print(f"正在添加 {symbol} 的 {freq_name} 数据{main_tag}...")
+            
+            self.add_data(
+                symbol=symbol,
+                start_date=start_date,
+                end_date=end_date,
+                frequency=freq,
+                name=name,
+                is_main=is_main
+            )
+        
+        self._data_sources_added = True
+        
+        if self.printlog:
+            print(f"✓ 已添加 {len(frequencies)} 个数据源")
+        
         return self
     
     def add_strategy(

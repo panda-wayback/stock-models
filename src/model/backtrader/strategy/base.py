@@ -37,7 +37,12 @@ class BaseStrategy(bt.Strategy):
         
         # 数据引用
         self.datas = self.datas if hasattr(self, 'datas') else [self.data]
-        self.data = self.datas[0]  # 主数据源
+        self.data = self.datas[0]  # 主数据源（用于触发判断和交易）
+        
+        # 数据源映射：{名称: 数据源}
+        self._data_map: Dict[str, bt.LineSeries] = {}
+        # 初始化数据源映射（延迟初始化，在第一次访问时完成）
+        self._data_map_initialized = False
         
         # 指标存储：字典结构 {指标名: {日期: 值}} 或 {指标名: 值}
         # 支持两种存储方式：
@@ -266,36 +271,50 @@ class BaseStrategy(bt.Strategy):
     
     def set_indicator(self, name: str, value: any, date: Optional[datetime] = None):
         """
-        设置指标值
+        设置指标值（默认按日期存储）
         
         参数:
         - name: 指标名称（如 'chip_peak', 'rsi', 'macd' 等）
         - value: 指标值（可以是数值、列表、字典等任意类型）
-        - date: 日期（可选），如果提供则按日期存储历史指标
+        - date: 日期（可选），如果不提供则使用当前数据的日期
+        
+        注意：
+        - 默认按日期存储，便于按时间序列获取指标
+        - 如果之前存储的是非日期格式，会自动转换为日期格式
         
         示例:
-        # 存储当前指标
+        # 存储指标（自动使用当前日期）
         self.set_indicator('chip_peak', {'price': 35.5, 'volume': 1000})
         
-        # 存储历史指标（按日期）
+        # 指定日期存储
         self.set_indicator('chip_peak', {'price': 35.5, 'volume': 1000}, date=self.data.datetime.date(0))
         """
-        if date is not None:
-            # 历史指标：按日期存储
-            if name not in self.indicators:
-                self.indicators[name] = {}
-            if isinstance(self.indicators[name], dict) and not isinstance(self.indicators[name].get(list(self.indicators[name].keys())[0] if self.indicators[name] else None), dict):
-                # 如果之前存储的是当前值，转换为历史格式
-                old_value = self.indicators[name]
-                self.indicators[name] = {}
-                # 尝试恢复历史值（如果有）
-                if isinstance(old_value, dict) and 'date' in str(old_value):
-                    pass  # 已经是历史格式
-            date_key = date if isinstance(date, (str, pd.Timestamp)) else pd.Timestamp(date)
-            self.indicators[name][date_key] = value
+        # 如果没有指定日期，使用当前数据的日期
+        if date is None:
+            date = self.data.datetime.date(0)
+        
+        # 确保指标以日期格式存储
+        if name not in self.indicators:
+            self.indicators[name] = {}
+        elif not isinstance(self.indicators[name], dict):
+            # 如果之前存储的是非字典格式，转换为日期格式
+            old_value = self.indicators[name]
+            self.indicators[name] = {}
+            # 如果有旧值，可以保存到当前日期（可选）
+            # self.indicators[name][self.data.datetime.date(0)] = old_value
+        
+        # 转换为日期键
+        if isinstance(date, pd.Timestamp):
+            date_key = date.date()
+        elif isinstance(date, datetime):
+            date_key = date.date()
+        elif isinstance(date, str):
+            date_key = pd.Timestamp(date).date()
         else:
-            # 当前指标：直接存储
-            self.indicators[name] = value
+            date_key = date
+        
+        # 存储指标（按日期）
+        self.indicators[name][date_key] = value
     
     def get_indicator(self, name: str, date: Optional[datetime] = None, default: any = None) -> any:
         """
@@ -303,17 +322,17 @@ class BaseStrategy(bt.Strategy):
         
         参数:
         - name: 指标名称
-        - date: 日期（可选），如果提供则获取指定日期的历史指标
+        - date: 日期（可选），如果提供则获取指定日期的指标，否则返回最新的指标
         - default: 默认值（如果指标不存在）
         
         返回:
         指标值，如果不存在返回 default
         
         示例:
-        # 获取当前指标
+        # 获取最新指标（当前日期或最近的日期）
         chip_peak = self.get_indicator('chip_peak')
         
-        # 获取历史指标
+        # 获取指定日期的指标
         chip_peak = self.get_indicator('chip_peak', date=self.data.datetime.date(0))
         """
         if name not in self.indicators:
@@ -321,47 +340,73 @@ class BaseStrategy(bt.Strategy):
         
         indicator = self.indicators[name]
         
+        # 如果不是字典格式（旧格式兼容），直接返回
+        if not isinstance(indicator, dict):
+            return indicator
+        
         if date is not None:
-            # 获取历史指标
-            if isinstance(indicator, dict):
-                date_key = date if isinstance(date, (str, pd.Timestamp)) else pd.Timestamp(date)
-                return indicator.get(date_key, default)
+            # 获取指定日期的指标
+            if isinstance(date, pd.Timestamp):
+                date_key = date.date()
+            elif isinstance(date, datetime):
+                date_key = date.date()
+            elif isinstance(date, str):
+                date_key = pd.Timestamp(date).date()
             else:
-                # 如果存储的是当前值，返回 None
-                return default
+                date_key = date
+            
+            return indicator.get(date_key, default)
         else:
-            # 获取当前指标
-            if isinstance(indicator, dict) and len(indicator) > 0:
-                # 如果是历史格式，返回最新的值
+            # 获取最新指标（最近的日期）
+            if len(indicator) > 0:
                 latest_date = max(indicator.keys())
                 return indicator[latest_date]
-            return indicator
+            return default
     
-    def get_indicator_history(self, name: str) -> Dict:
+    def get_indicator_history(self, name: str, as_list: bool = False) -> any:
         """
         获取指标的历史值（所有日期）
         
         参数:
         - name: 指标名称
+        - as_list: 是否返回列表格式，默认 False 返回字典
         
         返回:
-        字典 {日期: 值}，如果指标不存在或不是历史格式，返回空字典
+        - 如果 as_list=False: 字典 {日期: 值}，按日期排序
+        - 如果 as_list=True: 列表 [(日期, 值), ...]，按日期排序
         
         示例:
+        # 获取字典格式
         chip_peak_history = self.get_indicator_history('chip_peak')
         # 返回: {date1: value1, date2: value2, ...}
+        
+        # 获取列表格式（推荐，便于遍历）
+        chip_peak_list = self.get_indicator_history('chip_peak', as_list=True)
+        # 返回: [(date1, value1), (date2, value2), ...]
+        for date, value in chip_peak_list:
+            print(f"{date}: {value}")
         """
         if name not in self.indicators:
-            return {}
+            return [] if as_list else {}
         
         indicator = self.indicators[name]
-        if isinstance(indicator, dict):
-            # 检查是否是历史格式（键是日期）
-            if len(indicator) > 0:
-                first_key = list(indicator.keys())[0]
-                if isinstance(first_key, (pd.Timestamp, datetime, str)):
-                    return indicator
-        return {}
+        
+        # 如果不是字典格式（旧格式兼容），返回空
+        if not isinstance(indicator, dict):
+            return [] if as_list else {}
+        
+        if len(indicator) == 0:
+            return [] if as_list else {}
+        
+        # 按日期排序
+        sorted_items = sorted(indicator.items())
+        
+        if as_list:
+            # 返回列表格式
+            return sorted_items
+        else:
+            # 返回字典格式（保持排序）
+            return dict(sorted_items)
     
     def has_indicator(self, name: str) -> bool:
         """
@@ -396,6 +441,102 @@ class BaseStrategy(bt.Strategy):
             self.indicators.clear()
         elif name in self.indicators:
             del self.indicators[name]
+    
+    def _init_data_map(self):
+        """初始化数据源映射"""
+        if not self._data_map_initialized:
+            for i, data in enumerate(self.datas):
+                name = getattr(data, '_name', f'data_{i}')
+                self._data_map[name] = data
+            self._data_map_initialized = True
+    
+    def get_data(self, name: Optional[str] = None) -> bt.LineSeries:
+        """
+        获取指定名称的数据源
+        
+        参数:
+        - name: 数据源名称（如 "000651_d", "000651_60", "000651_w"）
+               如果为 None，返回主数据源
+        
+        返回:
+        数据源对象
+        
+        示例:
+        # 获取日线数据
+        daily_data = self.get_data("000651_d")
+        daily_price = daily_data.close[0]
+        
+        # 获取周线数据
+        weekly_data = self.get_data("000651_w")
+        weekly_price = weekly_data.close[0]
+        """
+        # 初始化数据源映射
+        self._init_data_map()
+        
+        if name is None:
+            return self.data
+        
+        if name in self._data_map:
+            return self._data_map[name]
+        
+        # 如果名称不存在，尝试通过索引访问
+        try:
+            idx = int(name)
+            if 0 <= idx < len(self.datas):
+                return self.datas[idx]
+        except (ValueError, IndexError):
+            pass
+        
+        raise ValueError(f"数据源 '{name}' 不存在。可用数据源: {list(self._data_map.keys())}")
+    
+    def get_dataframe(self, name: Optional[str] = None) -> pd.DataFrame:
+        """
+        获取指定数据源的完整 DataFrame
+        
+        参数:
+        - name: 数据源名称，如果为 None 则使用主数据源
+        
+        返回:
+        完整的 DataFrame
+        """
+        data = self.get_data(name)
+        
+        # 构建 DataFrame
+        data_list = []
+        current_idx = 0
+        
+        while current_idx < len(data.close):
+            try:
+                dt = data.datetime.datetime(-current_idx - 1)
+                data_list.append({
+                    'datetime': dt,
+                    'date': dt.date(),
+                    'open': data.open[-current_idx - 1],
+                    'high': data.high[-current_idx - 1],
+                    'low': data.low[-current_idx - 1],
+                    'close': data.close[-current_idx - 1],
+                    'volume': data.volume[-current_idx - 1],
+                })
+                current_idx += 1
+            except (IndexError, AttributeError):
+                break
+        
+        df = pd.DataFrame(data_list)
+        if not df.empty:
+            df.set_index('date', inplace=True)
+            df.sort_index(inplace=True)
+        
+        return df
+    
+    def list_data_sources(self) -> List[str]:
+        """
+        列出所有可用的数据源名称
+        
+        返回:
+        数据源名称列表
+        """
+        self._init_data_map()
+        return list(self._data_map.keys())
     
     def can_sell_today(self) -> bool:
         """

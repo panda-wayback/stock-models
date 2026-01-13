@@ -21,12 +21,21 @@ def example_sma_cross():
         printlog=True
     )
     
-    # 添加数据
-    engine.add_data(
-        symbol="000651",        # 格力电器
+    # 添加数据（方式1：单个数据源）
+    # engine.add_data(
+    #     symbol="000651",
+    #     start_date="2024-01-01",
+    #     end_date="2025-12-31",
+    #     frequency="d"  # 日线
+    # )
+    
+    # 添加数据（方式2：自动添加所有数据源，推荐）
+    engine.add_stock_data(
+        symbol="000651",
         start_date="2024-01-01",
-        end_date="2025-12-31",
-        frequency="d"           # 日线
+        end_date="2025-12-31"
+        # 默认添加：5分钟、15分钟、30分钟、60分钟、日线
+        # 主数据源：5分钟（用于精确触发判断）
     )
     
     # 添加策略
@@ -66,20 +75,20 @@ def example_rsi():
         printlog=True
     )
     
-    # 添加数据
-    engine.add_data(
+    # 添加数据（自动添加所有数据源）
+    engine.add_stock_data(
         symbol="000651",
         start_date="2025-01-01",
-        end_date="2025-12-31",
-        frequency="60"
+        end_date="2025-12-31"
+        # 默认添加：5分钟、15分钟、30分钟、60分钟、日线
+        # 主数据源：5分钟（用于精确触发判断）
     )
     
     # 添加策略
     engine.add_strategy(
         RSIStrategy,
-        rsi_period=14,
-        rsi_low=30,
-        rsi_high=70,
+        rsi_low=30,         # RSI 超卖阈值
+        rsi_high=70,        # RSI 超买阈值
         buy_ratio=1.0,      # 使用100%现金买入
         sell_ratio=1.0,     # 卖出100%持仓
         printlog=True

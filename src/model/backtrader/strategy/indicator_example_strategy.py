@@ -88,27 +88,32 @@ class IndicatorExampleStrategy(BaseStrategy):
         # 2. 计算指标（例如：筹码峰）
         chip_peak = self.calculate_chip_peak(full_df, lookback=60)
         
-        # 3. 存储当前指标（不按日期）
+        # 3. 存储指标（默认按日期存储，使用当前分时数据的日期）
+        # 不需要指定 date，会自动使用当前数据的日期
         self.set_indicator('chip_peak', chip_peak)
         
-        # 4. 存储历史指标（按日期）
-        current_date = self.data.datetime.date(0)
-        self.set_indicator('chip_peak_history', chip_peak, date=current_date)
-        
-        # 5. 计算并存储其他指标
+        # 4. 计算并存储其他指标（也按日期存储）
         momentum = self.calculate_custom_indicator(full_df)
-        self.set_indicator('momentum', momentum, date=current_date)
+        self.set_indicator('momentum', momentum)
         
-        # 6. 获取之前存储的指标
-        previous_chip_peak = self.get_indicator('chip_peak')
-        historical_chip_peak = self.get_indicator('chip_peak_history', date=current_date)
+        # 5. 获取最新指标
+        latest_chip_peak = self.get_indicator('chip_peak')
         
-        # 7. 获取指标历史
-        chip_peak_history = self.get_indicator_history('chip_peak_history')
+        # 6. 获取指定日期的指标
+        current_date = self.data.datetime.date(0)
+        today_chip_peak = self.get_indicator('chip_peak', date=current_date)
         
-        # 8. 使用指标进行交易决策
-        if previous_chip_peak:
-            avg_price = previous_chip_peak.get('avg_price', 0)
+        # 7. 获取指标历史列表（按日期排序）
+        chip_peak_history = self.get_indicator_history('chip_peak', as_list=True)
+        # 返回: [(date1, value1), (date2, value2), ...]
+        
+        # 8. 遍历指标历史
+        # for date, value in chip_peak_history:
+        #     print(f"{date}: {value}")
+        
+        # 9. 使用指标进行交易决策
+        if latest_chip_peak:
+            avg_price = latest_chip_peak.get('avg_price', 0)
             current_price = self.get_current_price()
             
             # 示例策略：价格低于平均筹码价格时买入
@@ -123,10 +128,16 @@ class IndicatorExampleStrategy(BaseStrategy):
                     self.log(f'价格高于筹码峰均价，卖出。当前价格: {current_price:.2f}, 均价: {avg_price:.2f}')
                     self.sell()
         
-        # 9. 在策略结束时，可以查看所有指标
+        # 10. 在策略结束时，可以查看所有指标
         if len(full_df) == len(self.data.close):  # 最后一天
             self.log(f'所有指标: {self.list_indicators()}', doprint=True)
             self.log(f'筹码峰历史记录数: {len(chip_peak_history)}', doprint=True)
+            
+            # 查看最近几天的指标
+            if chip_peak_history:
+                self.log('最近5天的筹码峰:', doprint=True)
+                for date, value in chip_peak_history[-5:]:
+                    self.log(f'  {date}: 均价={value.get("avg_price", 0):.2f}', doprint=True)
 
 
 class SimpleIndicatorStrategy(BaseStrategy):
@@ -149,18 +160,21 @@ class SimpleIndicatorStrategy(BaseStrategy):
         current_price = self.get_current_price()
         sma_value = self.sma[0]
         
-        # 存储当前指标
+        # 存储指标（默认按日期存储，使用当前分时数据的日期）
         self.set_indicator('price', current_price)
         self.set_indicator('sma', sma_value)
         
-        # 存储历史指标
-        current_date = self.data.datetime.date(0)
-        self.set_indicator('price_history', current_price, date=current_date)
-        self.set_indicator('sma_history', sma_value, date=current_date)
-        
-        # 获取指标
+        # 获取最新指标
         price = self.get_indicator('price')
-        price_history = self.get_indicator_history('price_history')
+        sma = self.get_indicator('sma')
+        
+        # 获取指标历史列表（按日期排序）
+        price_history = self.get_indicator_history('price', as_list=True)
+        # 返回: [(date1, price1), (date2, price2), ...]
+        
+        # 遍历价格历史
+        # for date, price_value in price_history:
+        #     print(f"{date}: {price_value:.2f}")
         
         # 使用指标
         if price and sma_value:
