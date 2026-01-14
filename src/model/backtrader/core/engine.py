@@ -9,6 +9,7 @@ import pandas as pd
 
 from model.backtrader.core.data_adapter import load_stock_data_to_backtrader, prepare_backtrader_data
 from model.backtrader.core.comm_info import ChinaStockCommInfo
+from utils.stock_data import get_stock_data
 
 
 class BacktestEngine:
@@ -24,7 +25,8 @@ class BacktestEngine:
         commission: float = 0.0003,
         stamp_tax: float = 0.001,
         min_commission: float = 5.0,
-        printlog: bool = False
+        printlog: bool = False,
+        trigger_frequency: Optional[str] = None
     ):
         """
         初始化回测引擎
@@ -35,12 +37,15 @@ class BacktestEngine:
         - stamp_tax: 印花税率（默认 0.001 = 0.1%）
         - min_commission: 最小手续费（默认 5.0 元）
         - printlog: 是否打印日志
+        - trigger_frequency: 触发频率（用于设置主数据源），如 "d"（日线）、"5"（5分钟）、"15"（15分钟）等
+                           None 表示使用默认（5分钟）
         """
         self.initial_cash = initial_cash
         self.commission = commission
         self.stamp_tax = stamp_tax
         self.min_commission = min_commission
         self.printlog = printlog
+        self.trigger_frequency = trigger_frequency or "5"  # 默认5分钟
         
         # 创建 Cerebro
         self.cerebro = bt.Cerebro()
@@ -61,6 +66,10 @@ class BacktestEngine:
         
         # 数据源配置
         self._data_sources_added = False
+        
+        # 存储所有频率的数据（供策略使用，不添加到 backtrader）
+        # 格式: {frequency: DataFrame}
+        self._stock_data_cache: Dict[str, pd.DataFrame] = {}
     
     def add_data(
         self,
@@ -118,8 +127,7 @@ class BacktestEngine:
         symbol: str,
         start_date: str,
         end_date: str,
-        frequencies: Optional[List[str]] = None,
-        main_frequency: Optional[str] = None
+        frequencies: Optional[List[str]] = None
     ):
         """
         自动添加股票的所有数据源（一键添加）
@@ -130,8 +138,10 @@ class BacktestEngine:
         - end_date: 结束日期 "YYYY-MM-DD"
         - frequencies: 需要的数据频率列表，默认 ["5", "15", "30", "60", "d"]
                      支持: "5", "15", "30", "60" (分钟线), "d" (日线), "w" (周线), "m" (月线)
-        - main_frequency: 主数据源频率（用于触发判断），默认 "5"（5分钟线）
-                         如果 frequencies 中没有该频率，会自动添加
+        
+        注意:
+        - 主数据源（触发频率）由 BacktestEngine 的 trigger_frequency 参数决定
+        - 所有数据源都会被添加，但只有主数据源会触发 next()
         
         返回:
         self（支持链式调用）
@@ -139,36 +149,19 @@ class BacktestEngine:
         示例:
         # 自动添加所有数据源（5分钟、15分钟、30分钟、60分钟、日线）
         engine.add_stock_data("000651", "2025-01-01", "2025-12-31")
-        
-        # 只添加日线和周线
-        engine.add_stock_data(
-            "000651", 
-            "2025-01-01", 
-            "2025-12-31",
-            frequencies=["d", "w"]
-        )
-        
-        # 指定主数据源为日线
-        engine.add_stock_data(
-            "000651",
-            "2025-01-01",
-            "2025-12-31",
-            main_frequency="d"
-        )
         """
+        # 保存所有频率信息、股票代码和日期范围，供策略使用
         if frequencies is None:
-            frequencies = ["5", "15", "30", "60", "d"]  # 默认：所有分钟线（5、15、30、60分钟）和日线
-        
-        if main_frequency is None:
-            main_frequency = "5"  # 默认主数据源：5分钟线（最细粒度，用于精确触发）
-        
-        # 确保主数据源在频率列表中，并且是第一个
-        if main_frequency not in frequencies:
-            frequencies.insert(0, main_frequency)
+            self._all_frequencies = ["5", "15", "30", "60", "d"]  # 默认：所有分钟线（5、15、30、60分钟）和日线
         else:
-            # 如果主数据源在列表中，移到第一个位置
-            frequencies.remove(main_frequency)
-            frequencies.insert(0, main_frequency)
+            self._all_frequencies = frequencies.copy()
+        
+        self._stock_symbol = symbol
+        self._stock_start_date = start_date
+        self._stock_end_date = end_date
+        
+        # 根据 trigger_frequency 设置主数据源
+        main_frequency = self.trigger_frequency
         
         # 频率名称映射
         frequency_names = {
@@ -181,29 +174,41 @@ class BacktestEngine:
             "m": "月线"
         }
         
-        # 添加每个数据源
-        for i, freq in enumerate(frequencies):
-            is_main = (i == 0)  # 第一个数据源是主数据源
-            name = f"{symbol}_{freq}"
-            
+        # 1. 加载并存储所有频率的数据（供策略使用，不添加到 backtrader）
+        if self.printlog:
+            print(f"正在加载所有频率的数据（供策略使用）...")
+        
+        for freq in self._all_frequencies:
             if self.printlog:
                 freq_name = frequency_names.get(freq, freq)
-                main_tag = "（主数据源）" if is_main else ""
-                print(f"正在添加 {symbol} 的 {freq_name} 数据{main_tag}...")
+                print(f"  加载 {symbol} 的 {freq_name} 数据...")
             
-            self.add_data(
-                symbol=symbol,
-                start_date=start_date,
-                end_date=end_date,
-                frequency=freq,
-                name=name,
-                is_main=is_main
-            )
+            # 加载数据并存储到缓存中
+            df = get_stock_data(symbol, start_date, end_date, freq)
+            self._stock_data_cache[freq] = df
+        
+        if self.printlog:
+            print(f"✓ 已加载 {len(self._all_frequencies)} 个频率的数据到缓存")
+        
+        # 2. 只添加 trigger_frequency 指定的数据源到 backtrader（限制 next() 触发频率）
+        # 这样只有这个频率会触发 next()，避免额外触发
+        if self.printlog:
+            freq_name = frequency_names.get(main_frequency, main_frequency)
+            print(f"正在添加 {symbol} 的 {freq_name} 数据到 backtrader（主数据源，触发频率）...")
+        
+        self.add_data(
+            symbol=symbol,
+            start_date=start_date,
+            end_date=end_date,
+            frequency=main_frequency,
+            name=f"{symbol}_{main_frequency}",
+            is_main=True
+        )
         
         self._data_sources_added = True
         
         if self.printlog:
-            print(f"✓ 已添加 {len(frequencies)} 个数据源")
+            print(f"✓ 已添加主数据源（{main_frequency}），策略可通过 get_synced_data_by_frequency() 获取其他频率的同步数据")
         
         return self
     
@@ -218,7 +223,22 @@ class BacktestEngine:
         参数:
         - strategy_class: 策略类（继承自 bt.Strategy）
         - **strategy_params: 策略参数
+        
+        注意:
+        - 会自动将股票代码、日期范围、所有频率等信息传递给策略，供获取同步数据使用
         """
+        # 将股票信息和数据缓存传递给策略参数，供策略使用
+        if hasattr(self, '_stock_symbol'):
+            strategy_params['_stock_symbol'] = self._stock_symbol
+        if hasattr(self, '_stock_start_date'):
+            strategy_params['_stock_start_date'] = self._stock_start_date
+        if hasattr(self, '_stock_end_date'):
+            strategy_params['_stock_end_date'] = self._stock_end_date
+        if hasattr(self, '_all_frequencies'):
+            strategy_params['_all_frequencies'] = self._all_frequencies
+        if hasattr(self, '_stock_data_cache'):
+            strategy_params['_stock_data_cache'] = self._stock_data_cache
+        
         self.cerebro.addstrategy(strategy_class, **strategy_params)
         return self
     

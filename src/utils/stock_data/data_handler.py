@@ -64,45 +64,80 @@ class DataHandler:
         existing_files = [f for f in os.listdir(save_dir) if f.endswith(".parquet")]
         existing_dates = {f.replace(".parquet", "") for f in existing_files}
         
-        # 2. 调用 API 获取请求范围内的所有数据
-        # 注意：API 只会返回交易日数据，不会返回周末和节假日
-        # 由于我们不知道哪些是交易日，无法准确判断本地数据是否完整
-        # 策略：调用 API 获取数据，然后从返回的数据中提取实际日期，只保存缺失的
-        print(f"正在获取数据: {symbol} [{start_date_normalized} 到 {end_date_normalized}]")
-        df_new = self.baostock_handler.get_history_k_data(
-            code=symbol,
-            start_date=start_date_normalized,
-            end_date=end_date_normalized,
-            frequency=frequency,
-            adjustflag=adjust_flag
-        )
+        # 2. 检查本地数据是否可能完整（覆盖请求的日期范围）
+        need_api_call = True
+        if existing_dates:
+            # 获取本地数据的日期范围
+            sorted_dates = sorted(existing_dates)
+            local_start = sorted_dates[0]
+            local_end = sorted_dates[-1]
+            
+            # 如果本地数据覆盖了请求范围，尝试从本地读取验证
+            if local_start <= start_date_normalized and local_end >= end_date_normalized:
+                # 本地数据范围覆盖了请求范围，先尝试从本地读取
+                # 如果本地数据看起来完整（有足够的数据点），就不调用 API
+                all_dfs_local = []
+                for f in sorted(existing_files):
+                    date_str = f.replace(".parquet", "")
+                    if start_date_normalized <= date_str <= end_date_normalized:
+                        file_path = os.path.join(save_dir, f)
+                        all_dfs_local.append(pd.read_parquet(file_path))
+                
+                if all_dfs_local:
+                    # 本地有数据，检查数据量是否合理
+                    # 对于日线数据，粗略估算：一年约 250 个交易日
+                    # 对于分钟线数据，数据量会更多
+                    df_local = pd.concat(all_dfs_local).sort_index()
+                    date_range_days = (pd.to_datetime(end_date_normalized) - pd.to_datetime(start_date_normalized)).days
+                    
+                    # 如果本地数据量看起来合理（至少有请求日期范围内一定比例的数据），就不调用 API
+                    # 这里采用保守策略：如果本地数据范围完全覆盖请求范围，就不调用 API
+                    # 注意：由于无法准确判断哪些是交易日，这个判断可能不够精确，但可以避免大部分不必要的 API 调用
+                    if len(df_local) > 0:
+                        # 本地有数据，且范围覆盖请求范围，假设数据完整，不调用 API
+                        need_api_call = False
+                        print(f"所有数据已存在，无需获取新数据: {symbol} [{start_date_normalized} 到 {end_date_normalized}]")
+                        # 直接使用本地数据，跳过 API 调用
+                        # 后续会从本地读取并返回
         
-        # 3. 从返回的数据中提取实际存在的日期，并检查哪些需要保存
-        if not df_new.empty:
-            # 提取日期字符串：对于日线数据索引是 date，对于分钟线数据索引是 time
-            # 统一转换为 YYYY-MM-DD 格式
-            if isinstance(df_new.index, pd.DatetimeIndex):
-                df_new['temp_date'] = df_new.index.strftime('%Y-%m-%d')
-            else:
-                # 如果索引不是 DatetimeIndex，尝试转换
-                df_new['temp_date'] = pd.to_datetime(df_new.index).strftime('%Y-%m-%d')
+        # 3. 调用 API 获取请求范围内的所有数据（如果需要）
+        # 注意：API 只会返回交易日数据，不会返回周末和节假日
+        if need_api_call:
+            print(f"正在获取数据: {symbol} [{start_date_normalized} 到 {end_date_normalized}]")
+            df_new = self.baostock_handler.get_history_k_data(
+                code=symbol,
+                start_date=start_date_normalized,
+                end_date=end_date_normalized,
+                frequency=frequency,
+                adjustflag=adjust_flag
+            )
             
-            # 找出需要保存的日期（API 返回的日期中，本地不存在的）
-            dates_to_save = []
-            for date_str, group in df_new.groupby('temp_date'):
-                # 只保存缺失的日期数据
-                if date_str not in existing_dates:
-                    dates_to_save.append(date_str)
-                    day_path = os.path.join(save_dir, f"{date_str}.parquet")
-                    # 保存该日数据（移除临时列）
-                    group.drop(columns=['temp_date']).to_parquet(day_path)
-            
-            if dates_to_save:
-                print(f"已保存 {len(dates_to_save)} 个缺失日期的数据: {sorted(dates_to_save)}")
+            # 4. 从返回的数据中提取实际存在的日期，并检查哪些需要保存
+            if not df_new.empty:
+                # 提取日期字符串：对于日线数据索引是 date，对于分钟线数据索引是 time
+                # 统一转换为 YYYY-MM-DD 格式
+                if isinstance(df_new.index, pd.DatetimeIndex):
+                    df_new['temp_date'] = df_new.index.strftime('%Y-%m-%d')
+                else:
+                    # 如果索引不是 DatetimeIndex，尝试转换
+                    df_new['temp_date'] = pd.to_datetime(df_new.index).strftime('%Y-%m-%d')
+                
+                # 找出需要保存的日期（API 返回的日期中，本地不存在的）
+                dates_to_save = []
+                for date_str, group in df_new.groupby('temp_date'):
+                    # 只保存缺失的日期数据
+                    if date_str not in existing_dates:
+                        dates_to_save.append(date_str)
+                        day_path = os.path.join(save_dir, f"{date_str}.parquet")
+                        # 保存该日数据（移除临时列）
+                        group.drop(columns=['temp_date']).to_parquet(day_path)
+                
+                if dates_to_save:
+                    print(f"已保存 {len(dates_to_save)} 个缺失日期的数据: {sorted(dates_to_save)}")
+                else:
+                    print("所有数据已存在，无需保存新数据")
             else:
-                print("所有数据已存在，无需保存新数据")
-        else:
-            print("API 未返回数据，可能日期范围内无交易日")
+                print("API 未返回数据，可能日期范围内无交易日")
 
         # 4. 从本地读取最终结果
         all_dfs = []

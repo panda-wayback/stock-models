@@ -2,10 +2,13 @@
 策略基类
 提供便捷的数据访问和交易接口
 """
+from __future__ import annotations
+
 import backtrader as bt
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional
 from datetime import datetime
 import pandas as pd
+from utils.stock_data import get_stock_data
 
 
 class BaseStrategy(bt.Strategy):
@@ -25,7 +28,19 @@ class BaseStrategy(bt.Strategy):
         ('printlog', False),  # 是否打印日志
         ('trigger_frequency', None),  # 触发频率（可选），如 "d", "5", "15", "30", "60" 等
                                       # None 表示使用主数据源（第一个数据源）触发
+        ('_stock_symbol', None),  # 股票代码（由引擎自动传递）
+        ('_stock_start_date', None),  # 开始日期（由引擎自动传递）
+        ('_stock_end_date', None),  # 结束日期（由引擎自动传递）
+        ('_all_frequencies', None),  # 所有可用频率列表（由引擎自动传递）
+        ('_stock_data_cache', None),  # 所有频率的数据缓存（由引擎自动传递）
     )
+    
+    # 类型提示：backtrader 框架在运行时注入的属性
+    # 这些属性由 backtrader 框架在运行时自动注入，这里声明以帮助 IDE 识别
+    # 注意：这些属性在 __init__ 时还不存在，会在 backtrader 启动后由框架注入
+    # 不能在这里赋值，因为它们是只读属性
+    broker: 'bt.brokers.BackBroker'  # type: ignore  # 经纪人对象，提供 getcash(), getvalue() 等方法
+    position: 'bt.position.Position'  # type: ignore  # 持仓对象，提供 size, price 等属性
     
     def __init__(self):
         """初始化策略"""
@@ -34,13 +49,15 @@ class BaseStrategy(bt.Strategy):
         self.buy_order = None
         self.sell_order = None
         
+        # 用于触发判断：记录上一次处理的日期/时间
+        self._last_trigger_date = None
+        
         # 记录买入日期（用于 T+1 检查）
         self._buy_dates: List[datetime] = []
         
         # 数据引用
         self.datas = self.datas if hasattr(self, 'datas') else [self.data]
         self.data = self.datas[0]  # 主数据源（backtrader 的 next() 总是由主数据源触发）
-        
         # 触发数据源（用于策略逻辑判断，可以不同于主数据源）
         self._trigger_data: Optional[bt.LineSeries] = None
         self._trigger_data_name: Optional[str] = None
@@ -568,7 +585,7 @@ class BaseStrategy(bt.Strategy):
         注意:
         - backtrader 的 next() 总是由主数据源触发
         - 此方法用于判断是否应该执行策略逻辑（基于触发数据源）
-        - 如果触发数据源是分时数据，而主数据源是日线，则只在分时数据更新时返回 True
+        - 如果触发数据源是日线，而主数据源是分时数据，则只在日线数据更新时返回 True
         
         示例:
         def next(self):
@@ -588,21 +605,85 @@ class BaseStrategy(bt.Strategy):
             return True
         
         # 如果触发数据源与主数据源不同，需要检查触发数据源是否有新数据
-        # 注意：backtrader 会自动同步数据，但我们需要确保触发数据源已经更新
-        # 这里我们检查触发数据源的当前 bar 是否与主数据源同步
-        # 实际上，由于 backtrader 的同步机制，如果主数据源触发了 next()，
-        # 其他数据源也会同步到对应的 bar，所以这里可以简化
-        
-        # 简化实现：如果触发数据源存在且有效，返回 True
-        # 更精确的实现需要检查触发数据源的时间戳是否更新
+        # 方法：记录上一次处理的日期/时间，只有当日期/时间变化时才触发
         try:
-            # 检查触发数据源是否有数据
-            if len(self._trigger_data.close) > 0:
-                return True
+            # 获取触发数据源的当前时间
+            trigger_datetime = self._trigger_data.datetime.datetime(0)
+            
+            # 对于日线数据，比较日期
+            if self.params.trigger_frequency == 'd':
+                trigger_date = trigger_datetime.date() if hasattr(trigger_datetime, 'date') else trigger_datetime
+                # 只有当日期变化时才触发（避免同一天内重复触发）
+                if self._last_trigger_date != trigger_date:
+                    self._last_trigger_date = trigger_date
+                    return True
+                return False
+            else:
+                # 对于分时数据，比较时间（精确到分钟）
+                # 只有当时间变化时才触发
+                if self._last_trigger_date != trigger_datetime:
+                    self._last_trigger_date = trigger_datetime
+                    return True
+                return False
         except (IndexError, AttributeError):
-            pass
+            # 如果获取时间失败，返回 False
+            return False
+    
+    def get_synced_data_by_frequency(
+        self,
+        frequency: str
+    ) -> pd.DataFrame:
+        """
+        获取指定频率的股票数据，并与 backtrader 当前时间点同步
         
-        return False
+        参数:
+        - frequency: 数据频率，如 "d"（日线）、"5"（5分钟）、"15"（15分钟）等
+        
+        返回:
+        DataFrame，包含指定频率的股票数据，数据截止到 backtrader 当前时间点
+        
+        说明:
+        - 此方法从引擎缓存中获取指定频率的数据，并自动与 backtrader 的当前时间点同步
+        - 返回的数据只包含到当前 backtrader 时间点的数据（历史数据）
+        - 可以在 next() 中调用，获取其他频率的同步数据进行计算
+        - 数据从引擎缓存中获取，无需重复加载
+        
+        示例:
+        # 在 next() 中获取5分钟数据（与当前时间点同步）
+        def next(self):
+            # 获取5分钟数据（自动同步到当前时间点）
+            df_5min = self.get_synced_data_by_frequency("5")
+            # 使用5分钟数据进行计算
+            ...
+        """
+        # 从策略参数中获取数据缓存（由引擎自动传递）
+        data_cache = getattr(self.params, '_stock_data_cache', None)
+        
+        if data_cache is None:
+            raise ValueError("数据缓存未找到，请确保使用 BacktestEngine.add_stock_data() 添加数据")
+        
+        # 从缓存中获取指定频率的数据
+        if frequency not in data_cache:
+            raise ValueError(f"频率 '{frequency}' 的数据未找到，可用频率: {list(data_cache.keys())}")
+        
+        df = data_cache[frequency].copy()
+        
+        if df.empty:
+            return df
+        
+        # 获取当前 backtrader 时间点
+        current_datetime = self.data.datetime.datetime(0)
+        current_date = current_datetime.date() if hasattr(current_datetime, 'date') else current_datetime
+        
+        # 根据频率类型，过滤数据到当前时间点
+        if frequency == 'd':
+            # 日线数据：过滤到当前日期
+            df = df[df.index.date <= current_date]
+        else:
+            # 分钟线数据：过滤到当前日期时间
+            df = df[df.index <= current_datetime]
+        
+        return df
     
     def get_data(self, name: Optional[str] = None) -> bt.LineSeries:
         """
